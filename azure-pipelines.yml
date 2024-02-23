@@ -1,41 +1,91 @@
-# Maven
-# Build your Java project and run tests with Apache Maven.
-# Add steps that analyze code, save build artifacts, deploy, and more:
-# https://docs.microsoft.com/azure/devops/pipelines/languages/java
-
 trigger:
 - main
 
 pool:
-  vmImage: ubuntu-latest
+  name: azureagent
 
-steps:
-- task: Maven@3
-  inputs:
-    mavenPomFile: 'pom.xml'
-    mavenOptions: '-Xmx3072m'
-    javaHomeOption: 'JDKVersion'
-    jdkVersionOption: '1.8'
-    jdkArchitectureOption: 'x64'
-    publishJUnitResults: true
-    testResultsFiles: '**/surefire-reports/TEST-*.xml'
-    goals: 'package'
-    
-- task: CopyFiles@2
-  inputs:
-    SourceFolder: '$(system.defaultworkingdirectory)'
-    Contents: 'aks-deploy-from-acr.yaml'
-    TargetFolder: '$(build.artifactstagingdirectory)'
-    
-- task: PublishBuildArtifacts@1
-  inputs:
-    PathtoPublish: '$(Build.ArtifactStagingDirectory)'
-    ArtifactName: 'drop'
-    publishLocation: 'Container'
-    
-- task: Docker@2
-  inputs:
-    containerRegistry: 'newServconcn'
-    repository: 'abcd'
-    command: 'buildAndPush'
-    Dockerfile: '**/Dockerfile'
+variables:
+  mavenVersion: '3.6.3'
+
+stages:
+- stage: BuildStage
+  displayName: 'Build Stage'
+  jobs:
+  - job: BuildSolution
+    displayName: 'Build Java Project'
+    steps:
+    - task: Maven@3
+      displayName: 'Build Maven'
+      inputs:
+        mavenPomFile: 'pom.xml'
+        mavenOptions: '-Xmx3072m'
+        goals: 'package'
+        publishJUnitResults: true
+        testResultsFiles: '**/surefire-reports/TEST-*.xml'
+    - task: SonarCloudPrepare@1
+      inputs:
+        SonarCloud: 'sonarcloud-sconcn'
+        organization: 'sandeepdev8310'
+        scannerMode: 'CLI'
+        configMode: 'manual'
+        cliProjectKey: 'sandeepdev8310'
+        cliProjectName: 'springboot-appa.zure.git'
+        cliSources: '.'
+        extraProperties: |
+          # Additional properties that will be passed to the scanner, 
+          # Put one key=value per line, example:
+          # sonar.exclusions=**/*.bin
+          sonar.java.binaries=.
+      env:
+        SONAR_SCANNER_OPTS: '-Dsonar.java.jdkHome=/usr/lib/jvm/java-17-openjdk-X64'
+
+    - task: SonarCloudAnalyze@1
+      inputs:
+        jdkversion: 'JAVA_HOME_17_X64'
+    - task: SonarCloudPublish@1
+      inputs:
+        pollingTimeoutSec: '300'
+
+    - task: CopyFiles@2
+      displayName: 'Copy artifact from working directory'
+      inputs:
+        SourceFolder: '$(system.defaultworkingdirectory)'
+        Contents: 'aks-deploy-from-acr.yaml'
+        TargetFolder: '$(build.artifactstagingdirectory)'
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publishing artifact'
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+        ArtifactName: 'drop'
+        publishLocation: 'Container'
+
+
+    - task: Docker@2
+      displayName: 'Build and push Docker image'
+      inputs:
+        command: 'buildAndPush'
+        containerRegistry: 'UserregistrationContainer'
+        repository: 'urimage'
+        Dockerfile: '**/Dockerfile'
+        tags: |
+          $(Build.BuildId)
+
+- stage: Deployment
+  displayName: 'Deploying to AKS'
+  jobs:
+  - job: DeployingToAKS
+    displayName: 'AKS Deployment'
+    steps:
+    - task: Kubernetes@1
+      displayName: 'Deploy to AKS'
+      inputs:
+        connectionType: 'Kubernetes Service Connection'
+        kubernetesServiceEndpoint: 'myAKSCluster-default'
+        command: 'apply'
+        useConfigurationFile: true
+        configuration: 'aks-deploy-from-acr.yaml'
+        secretType: 'dockerRegistry'
+        containerRegistryType: 'Azure Container Registry'
+        azureSubscriptionEndpointForSecrets: 'Free Trial(ee26c371-18ef-4132-a823-e6f2119a6609)'
+        azureContainerRegistry: 'userregistrationcontainer.azurecr.io'
